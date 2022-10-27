@@ -11,7 +11,7 @@ As we rely on output perturbation, we add multivariate Gaussian noise to the SVM
 ## Instructions
 
 Run `extract_embeddings.py` first which creates two embedding files: `code_space.npy` as well as `labels.npy`.
-Afterward run `SingleInvocationDPHelmet.py` to train the distributed `DP_SGD_SVM` which generates a file `tests_dphelmet_<datetime>.csv` listing all experiment results i.e., the accuracies as well as f1-scores (macro) after noise. For generating figures 1,2, and 3 of the paper for the DPHelmet variant only, refer to `example_viz.py`. Note that this part requires adaption dependent on the particular experiment configuration in use.
+Afterward run `SingleInvocationDPHelmet.py` to train the distributed `DP_SGD_SVM` which generates a file `tests_dphelmet_<datetime>.csv` listing all experiment results i.e., the accuracies as well as f1-scores (macro) after noise. For generating figures 3,4, and 5 of the paper for the DPHelmet variant only, refer to `example_viz.py`. Note that this part requires adaption dependent on the particular experiment configuration in use.
 
 ### Resources / Runtimes
 Expect this algorithm to take some time. In addition to the CIFAR-10 dataset (~162MB), it has to download about 3.3GB for the pre-trained model.
