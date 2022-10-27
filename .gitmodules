@@ -1,0 +1,3 @@
+[submodule "privacybuckets"]
+	path = privacybuckets
+	url = https://github.com/sommerda/privacybuckets.git
