@@ -61,7 +61,6 @@ def evaluate_distributed_psgd(
     clip_bound,
     lambda_=100,
     bs=20,
-    h=0.1,
     l2=0.07,
     epochs=90,
     n_users=100,
@@ -76,7 +75,6 @@ def evaluate_distributed_psgd(
         clip_bound (float): norm clipping bound of X_train.
         lambda_ (float, optional): regularization parameter of the SVM. Defaults to 100.
         bs (int, optional): batch size of SGD update. Defaults to 20.
-        h (float, optional): huber loss smoothness parameter. Defaults to 0.1.
         l2 (float, optional): model clipping bound: "l2-projection" (called R in the paper). Defaults to 0.07.
         epochs (int, optional): number of training epochs. Defaults to 90.
         n_users (int, optional): number of users. Defaults to 100.
@@ -89,17 +87,17 @@ def evaluate_distributed_psgd(
                              which is NON-PRIVATE but useful for debug purposes.
     """
     d = X_train.shape[1]  # dimensions
-    beta = clip_bound**2 / (2 * h) + lambda_  # beta smoothness
-    beta = np.sqrt(beta**2 + d * lambda_**2)  # correct for higher dimensions
+    beta = lambda_ + clip_bound**2  # beta smoothness
+    beta = np.sqrt( 0.5*beta**2 + n_classes * (d+1) * lambda_**2 )  # correct for higher dimensions
 
     # prepare inputs
-    y_train_onehot = tf.constant(np.eye(n_classes)[y_train].T * 2 - 1, dtype=tf.float32)
+    y_train_onehot = tf.constant(np.eye(n_classes)[y_train].T, dtype=tf.float32)
     inputs = tf.constant(X_train, dtype=tf.float32)
     h = tf.constant(h, dtype=tf.float32)
     lambda_ = tf.constant(lambda_, dtype=tf.float32)
 
     @tf.function
-    def J(c, i, x, y, l, h):
+    def J(c, i, x, y, l):
         """The SVM training objective.
 
         Args:
@@ -107,23 +105,16 @@ def evaluate_distributed_psgd(
             i (np.array): SVM intercept.
             x (np.array): input dataset (features).
             y (np.array): input dataset (one-hot-encoded labels).
-            l (float): regularization parameter $\\lambda$.
-            h (float): huber loss smoothness parameter.
+            l (float): regularization parameter $\lambda$.
 
         Returns:
             np.array: the loss.
         """
-        z = y * (tf.matmul(c, x, transpose_b=True) + i[:, None])
-        return 0.5 * l * (
+        z = (tf.matmul(c, x, transpose_b=True) + i[:, None])
+        return 0.5 * l * tf.reduce_sum(
             tf.linalg.diag_part(tf.matmul(c, c, transpose_b=True)) + i**2
         ) + tf.reduce_mean(
-            tf.where(
-                z > 1 + h,
-                tf.zeros_like(z, tf.float32),
-                tf.where(z < 1 - h, 1 - z, (1 + h - z) ** 2 / (4 * h)),
-            ),  # huber loss
-            # for hinge loss, insert: tf.maximum(0., 1 - z)
-            axis=1,
+            tf.nn.softmax_cross_entropy_with_logits(labels=tf.transpose(y), logits=tf.transpose(z))
         )
 
     n_iter_per_epoch = n_per_user // bs + (0 if n_per_user % bs == 0 else 1)
@@ -165,7 +156,7 @@ def evaluate_distributed_psgd(
                 with tf.GradientTape() as tape:
                     tape.watch([coef, intercept])
                     loss = tf.reduce_mean(
-                        J(coef, intercept, inputs__, y_train_onehot__, l=lambda_, h=h)
+                        J(coef, intercept, inputs__, y_train_onehot__, l=lambda_)
                     )
 
                 # SGD update step
@@ -178,15 +169,15 @@ def evaluate_distributed_psgd(
 
                 # make l2-projection with radius `l2`
                 actual_l2 = tf.maximum(
-                    l2, tf.sqrt(tf.norm(coef, axis=1) ** 2 + intercept**2)
+                    l2, tf.sqrt(tf.norm(coef) ** 2 + tf.norm(intercept) ** 2)
                 )
-                coef = coef / (actual_l2[:, None] / l2)
+                coef = coef / (actual_l2 / l2)
                 intercept = intercept / (actual_l2 / l2)
-
+                
         coefs.append(coef.numpy())
         intercepts.append(intercept.numpy())
         radius.append(
-            tf.reduce_max(tf.sqrt(tf.norm(coef, axis=1) ** 2 + intercept**2))
+            tf.reduce_max(tf.sqrt(tf.norm(coef) ** 2 + tf.norm(intercept) ** 2))
         )  # (optionally) track non-DP radius
 
     return coefs, intercepts, np.max(radius)
@@ -202,7 +193,7 @@ def evaluate_distributed_psgd(
 NB_SPLITS = 6
 NB_REPEATS = 5
 N_RUNS = NB_SPLITS * NB_REPEATS
-N_PROCESSES = 10
+N_PROCESSES = 2
 ### CV-PARAMS (END) ###
 
 tests_dphelmet_pre = pd.DataFrame(
@@ -214,7 +205,6 @@ tests_dphelmet_pre = pd.DataFrame(
         "unnoised_radius",
         "lambda",
         "bs",
-        "h",
         "l2",
         "epochs",
         "n_users",
@@ -254,11 +244,10 @@ def multi_eval(configuration, n_classes, clip_bound, X_clip, labels, noniid):
         clip_bound=clip_bound,
         lambda_=params[0],
         bs=int(params[1]),
-        h=params[2],
-        l2=params[3],
-        epochs=int(params[4]),
-        n_users=int(params[5]),
-        n_per_user=int(params[6]),
+        l2=params[2],
+        epochs=int(params[3]),
+        n_users=int(params[4]),
+        n_per_user=int(params[5]),
     )
     return {
         "coefs": coefs,
@@ -267,33 +256,31 @@ def multi_eval(configuration, n_classes, clip_bound, X_clip, labels, noniid):
         "test_indices": test_index,
         "lambda": params[0],
         "bs": int(params[1]),
-        "h": params[2],
-        "l2": params[3],
-        "epochs": int(params[4]),
-        "n_users": int(params[5]),
-        "n_per_user": int(params[6]),
+        "l2": params[2],
+        "epochs": int(params[3]),
+        "n_users": int(params[4]),
+        "n_per_user": int(params[5]),
     }
 
 
 ### HYPERPARAMS ###
-LAMBDA = [10, 100, 200]  # regularization parameter
+LAMBDA = [1, 3, 10, 30]  # regularization parameter
 BS = [20]  # batch size
-H = [0.1]  # huber loss smoothness
-L2 = [0.04, 0.05, 0.06, 0.07, 0.08]  # radius R, non-dep. on LAMBDA
+L2 = [0.1, 0.4, 0.6, 1.0]  # radius R, non-dep. on LAMBDA
 EPOCHS = [100]  # epochs
-N_USERS = [1, 100, 400, 1000]  # number of users
-N_PER_USER = [50]  # number of data points per user
+N_USERS = [1, 10, 100]  # number of users
+N_PER_USER = [500]  # number of data points per user
 NONIID = False
 ### HYPERPARAMS (END) ###
 
 
 # prepare hyperparams search space
 param_test = np.array(
-    list(itertools.product(LAMBDA, BS, H, L2, EPOCHS, N_USERS, N_PER_USER))
+    list(itertools.product(LAMBDA, BS, L2, EPOCHS, N_USERS, N_PER_USER))
 )
 # > make sure that not more datapoints are used than there are accessible
 param_test = param_test[
-    param_test[:, 5] * param_test[:, 6] <= len(code_space) * (NB_SPLITS - 1) / NB_SPLITS
+    param_test[:, 4] * param_test[:, 5] <= len(code_space) * (NB_SPLITS - 1) / NB_SPLITS
 ]
 print(f">> testing {len(param_test)} parameter combination(s)")
 
@@ -313,11 +300,11 @@ my_multi_eval = functools.partial(
 )
 
 with Parallel(n_jobs=N_PROCESSES, verbose=40) as p:
-    # run DP_SVM_SGD in parallel for the hyperparams search space
+    # run DP_Softmax_SLP_SGD in parallel for the hyperparams search space
     scores = p(delayed(my_multi_eval)(conf)
         for conf in zip(
             validator.split(X_clip, labels),
-            param_test[None].repeat(N_RUNS, axis=0).reshape(-1, 7),
+            param_test[None].repeat(N_RUNS, axis=0).reshape(-1, 6),
         ))
     # store the experiment results
     tests_dphelmet_pre = pd.concat([tests_dphelmet_pre, pd.DataFrame(
@@ -326,7 +313,6 @@ with Parallel(n_jobs=N_PROCESSES, verbose=40) as p:
                 "variant": "dist_dphelmet",
                 "bs": score["bs"],
                 "lambda": score["lambda"],
-                "h": score["h"],
                 "l2": score["l2"],
                 "epochs": score["epochs"],
                 "coefs": score["coefs"],
@@ -372,13 +358,10 @@ for eps in EPS:
         # > For a correct eps refer to the `Gaussian mechanism` (Lemma 6) or Privacy Buckets
         noise_scale = (
             (
-                2 / x["lambda"] * (clip_bound + x["l2"] * x["lambda"]) / x["n_per_user"]
+                2 / x["lambda"] * (np.sqrt(2)*clip_bound + x["l2"] * x["lambda"]) / (x["n_per_user"])
             )  # sensitivity
             # for Corollary 14 use `2 * x['l2']` as a sensitivity instead
             * np.sqrt(2 * np.log(1.25 / DELTA))  # estimate c for Gaussian leakage
-            * np.sqrt(
-                N_CLASSES
-            )  # estimate for number of classes/compositions: sqrt(n_classes)
             / (eps * np.sqrt(x["n_users"]))  # cf. Corollary 7 with eps := sigma.
         )
 
@@ -400,9 +383,9 @@ for eps in EPS:
             # make l2-projection with radius `l2`
             actual_l2 = tf.maximum(
                 x["l2"],
-                tf.sqrt(tf.norm(coef_noised, axis=1) ** 2 + intercept_noised**2),
+                tf.sqrt(tf.norm(coef_noised) ** 2 + tf.norm(intercept_noised) ** 2),
             )
-            coef_noised = coef_noised / (actual_l2[:, None] / x["l2"])
+            coef_noised = coef_noised / (actual_l2 / x["l2"])
             intercept_noised = intercept_noised / (actual_l2 / x["l2"])
 
             coefs.append(coef_noised)
@@ -431,7 +414,7 @@ for eps in EPS:
                 "lambda": x["lambda"],
                 "dp_eps": eps,
                 "dp_delta": DELTA,
-                "h": x["h"],
+                "h": -1,
                 "l2": x["l2"],
                 "epochs": x["epochs"],
                 "test_acc": test_accs[i],
