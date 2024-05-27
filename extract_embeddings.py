@@ -14,16 +14,18 @@ print(tf.__version__)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = ""  # You can activate GPU here
 
+DATASET_NAME = "cifar10"
+
 SAVED_EMBEDDINGS_PTH = "./"
-SAVED_EMBEDDINGS_FILENAME = "code_space.npy"
-SAVED_LABELS_FILENAME = "labels.npy"
+SAVED_EMBEDDINGS_FILENAME = "code_space_cifar10.npy" if DATASET_NAME == "CIFAR10" else "code_space_cifar100.npy"
+SAVED_LABELS_FILENAME = "labels_cifar100.npy" if DATASET_NAME == "CIFAR10" else "labels_cifar100.npy"
 
 
 ####################
 ### 1. SimCLR Embedding Extraction
 ####################
 
-DATASET_NAME = "cifar10"
+
 BATCH_SIZE = 8  # for SimCLR prediction only
 
 [tfds_dataset_train, tfds_dataset_test], tfds_info = tfds.load(

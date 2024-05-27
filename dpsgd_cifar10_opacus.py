@@ -2,7 +2,7 @@
 # coding: utf-8
 
 # original template by Facebook: https://github.com/pytorch/opacus/blob/v0.15.0/examples/mnist.py, Apache-2.0 license
-# modified by Authors of "Single SMPC Invocation DPHelmet: Differentially Private Distributed Learning on a Large Scale"
+# modified by Authors of "Distributed DPHelmet"
 
 import os
 
